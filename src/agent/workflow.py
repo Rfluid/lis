@@ -95,6 +95,24 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
+    async def generate_summary(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
+        state.step_history.append(Steps.summarize)
+
+        if config is None:
+            raise ValueError("Graph config unavailable.")
+
+        try:
+            self.summarizer.summarize_conditionally(state, config)
+        except Exception as e:
+            state.error = str(e)
+            state.next_step = Steps.error_handler
+
+        return state
+
     # Build the context for the AI.
     def get_current_date(self, state: GraphState) -> GraphState:
         state.step_history.append(Steps.get_current_date)

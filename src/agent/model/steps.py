@@ -20,6 +20,7 @@ class Steps(Enum):
     generate_response = (
         "generate_response"  # Generates response for the given chat interface.
     )
+    summarize = "summarize"  # Generates summary for the given messages.
 
     # Actions after response generation
     modify_calendar = "modify_calendar"
