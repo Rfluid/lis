@@ -299,7 +299,7 @@ class Workflow(SystemPromptBuilder):
             logger.info(f"Retrieved {len(retrieved_docs)} documents.")
 
             # Create a new SystemMessage with the retrieved documents
-            documents_message = SystemMessage(
+            documents_message = BaseMessage(
                 content=[
                     str(
                         ToolData(
@@ -307,7 +307,8 @@ class Workflow(SystemPromptBuilder):
                             label=f"Knowledge base documents retrieved for: '{query}'",
                         )
                     )
-                ]
+                ],
+                type="rag_data",
             )
 
             # Update the messages in state
