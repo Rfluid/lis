@@ -5,12 +5,13 @@ from typing import cast
 
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.postgres import PostgresSaver  # ⇐ postgres backend
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from psycopg import Connection, connect
+from psycopg import AsyncConnection
 from psycopg.rows import DictRow, dict_row
 
 from src.agent.model.chat_interface import ChatInterface
@@ -24,6 +25,7 @@ from src.error_handler import ErrorHandler
 from src.evaluate_tools.main import EvaluateTools
 from src.generate_response import ResponseGenerator
 from src.generate_response.model.response import BaseLLMResponse
+from src.summarize.main import Summarizer
 from src.system_prompt.main import SystemPromptBuilder
 from src.vector_manager.main import VectorManager
 
@@ -42,9 +44,10 @@ class Workflow(SystemPromptBuilder):
     response_generator: ResponseGenerator
     calendar_manager: CalendarManager
     graph: StateGraph
-    compiled_graph: CompiledStateGraph
-    memory: BaseCheckpointSaver
+    compiled_graph: CompiledStateGraph | None
+    memory: BaseCheckpointSaver | None
     vector_manager: VectorManager
+    summarizer: Summarizer
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,8 +56,19 @@ class Workflow(SystemPromptBuilder):
         self.calendar_manager = CalendarManager()
         self.vector_manager = VectorManager()
         self.error_handler = ErrorHandler()
+
         self.graph = self._load_graph()
-        self.memory = self._load_memory()
+        self.memory = None
+        self.compiled_graph = None
+        self._db_conn: AsyncConnection[DictRow] | None = (
+            None  # keep to close later if you want
+        )
+
+    async def ensure_ready(self) -> None:
+        """Idempotent: prepares memory + compiles graph once."""
+        if self.compiled_graph is not None:
+            return
+        self.memory = await self._load_memory()
         self.compiled_graph = self.graph.compile(checkpointer=self.memory)
 
     def context_incrementer(self, state: GraphState) -> GraphState:
@@ -91,18 +105,22 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
-    def generate_response(self, state: GraphState) -> GraphState:
+    def generate_response(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
         state.step_history.append(Steps.generate_response)
         try:
             match state.chat_interface:
                 case ChatInterface.api:
                     response = self.response_generator.generate_response(
-                        self.compiled_graph.config,
+                        config,
                         state.messages,
                     )
                 case ChatInterface.whatsapp:
                     response = self.response_generator.generate_whatsapp_response(
-                        self.compiled_graph.config,
+                        config,
                         state.messages,
                     )
 
@@ -117,7 +135,11 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
-    def decide_next_step(self, state: GraphState) -> GraphState:
+    def decide_next_step(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
         state.step_history.append(Steps.evaluate_tools)
         try:
             # Preventing double injection of context and loops
@@ -134,7 +156,7 @@ class Workflow(SystemPromptBuilder):
             #     raise ValueError("Loop detected: Tool already used.")
 
             response = self.tool_evaluator.decide_next_step(
-                self.compiled_graph.config,
+                config,
                 state.messages,  # Verify need
             )
 
@@ -385,19 +407,19 @@ class Workflow(SystemPromptBuilder):
 
         return graph
 
-    def _load_memory(self) -> BaseCheckpointSaver:
+    async def _load_memory(self) -> BaseCheckpointSaver:
         uri = env.POSTGRES_URI
         if uri:
-            # 1. open a long‑lived connection
-            raw = connect(
+            conn = await AsyncConnection.connect(
                 uri,
                 autocommit=True,
                 prepare_threshold=0,
             )
-            raw.row_factory = dict_row  # type: ignore[assignment]
-            conn = cast(Connection[DictRow], raw)  # 💡 silence Pyright/mypy
-            saver = PostgresSaver(conn)
-            saver.setup()  # one‑time DDL
+            conn.row_factory = dict_row  # type: ignore[assignment]
+            self._db_conn = cast(AsyncConnection[DictRow], conn)
+
+            saver = AsyncPostgresSaver(self._db_conn)
+            await saver.setup()  # one-time DDL
             return saver
 
         # fallback when no PG URI
