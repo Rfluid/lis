@@ -36,7 +36,7 @@ async def send_chat_message(
             ),
         ]
 
-        agent_response = start(
+        agent_response = await start(
             input,
             config,
             "response_generator",
@@ -77,7 +77,7 @@ async def send_system_instructions(
             ),
         ]
 
-        agent_response = start(
+        agent_response = await start(
             input,
             config,
             "context_incrementer",
