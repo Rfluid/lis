@@ -178,8 +178,10 @@ class Workflow(SystemPromptBuilder):
                 state.messages,  # Verify need
             )
 
-            ai_message = SystemMessage(content=[response.model_dump()])
-            state.messages = [ai_message]
+            reasoning_message = BaseMessage(
+                type="reasoning", content=[response.model_dump()]
+            )
+            state.messages = [reasoning_message]
 
             state.next_step = Steps(response.tool)
             calendar_manager_payload = response.search_calendars
