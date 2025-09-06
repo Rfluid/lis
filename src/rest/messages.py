@@ -44,6 +44,9 @@ async def send_chat_message(
             req.max_retries,
             req.loop_threshold,
             req.top_k,
+            summarize_message_window=req.summarize_message_window,
+            summarize_message_keep=req.summarize_message_keep,
+            summarize_system_messages=req.summarize_system_messages,
         )
 
         message = agent_response["response"]
