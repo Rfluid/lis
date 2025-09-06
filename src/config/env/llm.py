@@ -43,3 +43,18 @@ text_embedding_api_key = os.getenv("TEXT_EMBEDDING_API_KEY")
 TEXT_EMBEDDING_API_KEY = (
     SecretStr(text_embedding_api_key) if text_embedding_api_key else LLM_API_KEY
 )
+
+SUMMARIZE_LLM_PROVIDER = LLMProvider(
+    os.getenv("SUMMARIZE_LLM_PROVIDER") or LLM_PROVIDER
+)
+SUMMARIZE_LLM_MODEL_NAME = os.getenv("SUMMARIZE_LLM_MODEL_NAME") or LLM_MODEL_NAME
+summarize_llm_api_key = os.getenv("SUMMARIZE_LLM_API_KEY")
+SUMMARIZE_LLM_API_KEY = (
+    SecretStr(summarize_llm_api_key) if summarize_llm_api_key else LLM_API_KEY
+)
+summarize_llm_temperature = os.getenv("SUMMARIZE_LLM_TEMPERATURE")
+SUMMARIZE_LLM_TEMPERATURE = (
+    float(summarize_llm_temperature) if summarize_llm_temperature else LLM_TEMPERATURE
+)
+summarize_llm_stop = os.getenv("SUMMARIZE_LLM_STOP", None)
+SUMMARIZE_LLM_STOP = summarize_llm_stop.split(",") if summarize_llm_stop else None
