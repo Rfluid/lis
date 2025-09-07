@@ -1,4 +1,5 @@
-from typing import Literal
+from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,18 @@ class LLMAPIResponse(BaseLLMResponse):
 
 class LLMWhatsAppResponse(BaseLLMResponse):
     data: Message = Field(description="Response in the WhatsApp format.")
+
+
+class WebSocketData(Enum):
+    delta = "delta"
+    final = "final"
+
+
+class LLMWebSocketResponse(BaseModel):
+    type: WebSocketData = Field(description="Data type.")
+    data: Any = Field(
+        description="Data returned by the model. Can be a delta or the full response."
+    )
 
 
 LLMResponse = LLMAPIResponse | LLMWhatsAppResponse
