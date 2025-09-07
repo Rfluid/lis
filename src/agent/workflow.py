@@ -281,12 +281,10 @@ class Workflow(SystemPromptBuilder):
 
     def handle_error(self, state: GraphState) -> GraphState:
         state.step_history.append(Steps.error_handler)
-        logging.info("entered error handling")
         if state.error is None:
             raise ValueError("No error to handle.")
 
         if state.current_retries >= state.max_retries:
-            logging.exception("current retries exceeded")
             raise HTTPException(status_code=500, detail=state.error)
 
         state.current_retries += 1
