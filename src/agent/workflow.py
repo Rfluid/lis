@@ -56,6 +56,7 @@ class Workflow(SystemPromptBuilder):
         self.calendar_manager = CalendarManager()
         self.vector_manager = VectorManager()
         self.error_handler = ErrorHandler()
+        self.summarizer = Summarizer()
 
         self.graph = self._load_graph()
         self.memory = None
