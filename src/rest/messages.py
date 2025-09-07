@@ -36,9 +36,11 @@ async def send_message_ws(
             input: list[BaseMessage] = [
                 HumanMessage(
                     content=[
-                        {
-                            "data": req.data,
-                        }
+                        Input.model_validate(
+                            {
+                                "data": req.data,
+                            }
+                        ).model_dump()
                     ]
                 ),
             ]
