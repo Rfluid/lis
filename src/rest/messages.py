@@ -3,7 +3,9 @@ import logging
 from fastapi import (
     APIRouter,
     HTTPException,
+    WebSocket,
 )
+from fastapi.websockets import WebSocketDisconnect
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
@@ -16,6 +18,47 @@ from src.generate_response.model.response import LLMResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.websocket("/user/websocket")
+async def send_message_ws(
+    websocket: WebSocket,
+):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_json()
+            req = InputRequest(**data)
+
+            config: RunnableConfig = {
+                "configurable": {"thread_id": req.thread_id, "websocket": websocket},
+            }
+            input: list[BaseMessage] = [
+                HumanMessage(
+                    content=[
+                        {
+                            "data": req.data,
+                        }
+                    ]
+                ),
+            ]
+
+            await start(
+                input,
+                config,
+                "response_generator",
+                req.chat_interface,
+                req.max_retries,
+                req.loop_threshold,
+                req.top_k,
+                summarize_message_window=req.summarize_message_window,
+                summarize_message_keep=req.summarize_message_keep,
+                summarize_system_messages=req.summarize_system_messages,
+            )
+    except WebSocketDisconnect:
+        logger.info("Client disconnected.")
+    except Exception as e:
+        logger.error(f"Error sending chat message: {e}", exc_info=True)
 
 
 @router.post("/user", response_model=LLMResponse)

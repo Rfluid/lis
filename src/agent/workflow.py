@@ -126,12 +126,16 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
-    def generate_response(
+    async def generate_response(
         self,
         state: GraphState,
         config: RunnableConfig | None = None,
     ) -> GraphState:
         state.step_history.append(Steps.generate_response)
+
+        if config is None:
+            raise ValueError("Graph config unavailable.")
+
         try:
             match state.chat_interface:
                 case ChatInterface.api:
@@ -143,6 +147,20 @@ class Workflow(SystemPromptBuilder):
                     response = self.response_generator.generate_whatsapp_response(
                         config,
                         state.messages,
+                    )
+                case ChatInterface.websocket:
+                    # Retrieve websocket from the config you passed earlier
+                    websocket = config.get("configurable", {}).get("websocket")
+
+                    if websocket is None:
+                        raise ValueError("No WebSocket for WebSocket chat interface.")
+
+                    response = (
+                        await self.response_generator.generate_websocket_response(
+                            websocket,
+                            config,
+                            state.messages,
+                        )
                     )
 
             state.next_step = Steps(response.next_step)
