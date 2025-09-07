@@ -5,12 +5,13 @@ from typing import cast
 
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.postgres import PostgresSaver  # ⇐ postgres backend
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from psycopg import Connection, connect
+from psycopg import AsyncConnection
 from psycopg.rows import DictRow, dict_row
 
 from src.agent.model.chat_interface import ChatInterface
@@ -24,6 +25,7 @@ from src.error_handler import ErrorHandler
 from src.evaluate_tools.main import EvaluateTools
 from src.generate_response import ResponseGenerator
 from src.generate_response.model.response import BaseLLMResponse
+from src.summarize.main import Summarizer
 from src.system_prompt.main import SystemPromptBuilder
 from src.vector_manager.main import VectorManager
 
@@ -42,9 +44,10 @@ class Workflow(SystemPromptBuilder):
     response_generator: ResponseGenerator
     calendar_manager: CalendarManager
     graph: StateGraph
-    compiled_graph: CompiledStateGraph
-    memory: BaseCheckpointSaver
+    compiled_graph: CompiledStateGraph | None
+    memory: BaseCheckpointSaver | None
     vector_manager: VectorManager
+    summarizer: Summarizer
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,8 +56,19 @@ class Workflow(SystemPromptBuilder):
         self.calendar_manager = CalendarManager()
         self.vector_manager = VectorManager()
         self.error_handler = ErrorHandler()
+
         self.graph = self._load_graph()
-        self.memory = self._load_memory()
+        self.memory = None
+        self.compiled_graph = None
+        self._db_conn: AsyncConnection[DictRow] | None = (
+            None  # keep to close later if you want
+        )
+
+    async def ensure_ready(self) -> None:
+        """Idempotent: prepares memory + compiles graph once."""
+        if self.compiled_graph is not None:
+            return
+        self.memory = await self._load_memory()
         self.compiled_graph = self.graph.compile(checkpointer=self.memory)
 
     def context_incrementer(self, state: GraphState) -> GraphState:
@@ -81,28 +95,52 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
+    async def generate_summary(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
+        state.step_history.append(Steps.summarize)
+
+        if config is None:
+            raise ValueError("Graph config unavailable.")
+
+        try:
+            self.summarizer.summarize_conditionally(state, config)
+        except Exception as e:
+            state.error = str(e)
+            state.next_step = Steps.error_handler
+
+        return state
+
     # Build the context for the AI.
     def get_current_date(self, state: GraphState) -> GraphState:
         state.step_history.append(Steps.get_current_date)
 
-        date_context = SystemMessage(content=f"Current date is: {str(datetime.now())}")
+        date_context = BaseMessage(
+            content=f"Current date is: {str(datetime.now())}", type="calendar"
+        )
 
         state.messages = [date_context]
 
         return state
 
-    def generate_response(self, state: GraphState) -> GraphState:
+    def generate_response(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
         state.step_history.append(Steps.generate_response)
         try:
             match state.chat_interface:
                 case ChatInterface.api:
                     response = self.response_generator.generate_response(
-                        self.compiled_graph.config,
+                        config,
                         state.messages,
                     )
                 case ChatInterface.whatsapp:
                     response = self.response_generator.generate_whatsapp_response(
-                        self.compiled_graph.config,
+                        config,
                         state.messages,
                     )
 
@@ -117,7 +155,11 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
-    def decide_next_step(self, state: GraphState) -> GraphState:
+    def decide_next_step(
+        self,
+        state: GraphState,
+        config: RunnableConfig | None = None,
+    ) -> GraphState:
         state.step_history.append(Steps.evaluate_tools)
         try:
             # Preventing double injection of context and loops
@@ -134,12 +176,14 @@ class Workflow(SystemPromptBuilder):
             #     raise ValueError("Loop detected: Tool already used.")
 
             response = self.tool_evaluator.decide_next_step(
-                self.compiled_graph.config,
+                config,
                 state.messages,  # Verify need
             )
 
-            ai_message = SystemMessage(content=[response.model_dump()])
-            state.messages = [ai_message]
+            reasoning_message = BaseMessage(
+                type="reasoning", content=[response.model_dump()]
+            )
+            state.messages = [reasoning_message]
 
             state.next_step = Steps(response.tool)
             calendar_manager_payload = response.search_calendars
@@ -167,7 +211,7 @@ class Workflow(SystemPromptBuilder):
 
             events = self.calendar_manager.retrieve_events(payload)
 
-            ai_response = SystemMessage(
+            calendar_response = BaseMessage(
                 content=[
                     # This are the different ways I tested to attach the calendar data. Most of them give serialization errors.
                     # "Data retrieved from the calendar", events,
@@ -179,9 +223,10 @@ class Workflow(SystemPromptBuilder):
                             label=f"All events scheduled between {payload.start_time} and {payload.end_time} retrieved at {Steps.search_calendars}",
                         )
                     ),
-                ]
+                ],
+                type="calendar",
             )
-            state.messages = [ai_response]
+            state.messages = [calendar_response]
 
             state.next_step = Steps.evaluate_tools
         except Exception as e:
@@ -196,7 +241,6 @@ class Workflow(SystemPromptBuilder):
             state.next_step = Steps.end
 
             message = state.messages[-1]
-            logger.info(f"Modifying calendar with message: {message}")
             content = message.content[0]
 
             # Parse the last message as LLMResponse
@@ -212,25 +256,29 @@ class Workflow(SystemPromptBuilder):
             # Execute create
             if payloads.create_events:  # and confirmations.create_events:
                 created = self.calendar_manager.create_events(payloads.create_events)
-                system_message = SystemMessage(content=f"Created events: {created}")
-                modification_logs.append(system_message)
-                logger.info(f"Created events: {[e['id'] for e in created]}")
+                calendar_message = BaseMessage(
+                    content=f"Created events: {created}",
+                    type="calendar",
+                )
+                modification_logs.append(calendar_message)
 
             # Execute update
             if payloads.update_events:  # and confirmations.update_events:
                 updated = self.calendar_manager.update_events(payloads.update_events)
-                system_message = SystemMessage(content=f"Updated events: {updated}")
-                modification_logs.append(system_message)
-                logger.info(f"Updated events: {[e['id'] for e in updated]}")
+                calendar_message = BaseMessage(
+                    content=f"Updated events: {updated}",
+                    type="calendar",
+                )
+                modification_logs.append(calendar_message)
 
             # Execute delete
             if payloads.delete_events:  # and confirmations.delete_events:
                 self.calendar_manager.delete_events(payloads.delete_events)
-                system_message = SystemMessage(
-                    content=f"Deleted events: {payloads.delete_events}"
+                calendar_message = BaseMessage(
+                    content=f"Deleted events: {payloads.delete_events}",
+                    type="calendar",
                 )
-                modification_logs.append(system_message)
-                logger.info("Deleted events.")
+                modification_logs.append(calendar_message)
 
             if len(modification_logs) > 0:
                 state.messages = modification_logs
@@ -247,17 +295,13 @@ class Workflow(SystemPromptBuilder):
             if not isinstance(query, str):
                 raise ValueError("Expected the query to be a string.")
 
-            logger.info(f"Running RAG retrieval for query: {query}")
-
             # Retrieve relevant documents from the vectorstore
             retrieved_docs = self.vector_manager.retrieve(
                 query=query, top_k=state.top_k
             )
 
-            logger.info(f"Retrieved {len(retrieved_docs)} documents.")
-
-            # Create a new SystemMessage with the retrieved documents
-            documents_message = SystemMessage(
+            # Create a new Rag Message with the retrieved documents
+            documents_message = BaseMessage(
                 content=[
                     str(
                         ToolData(
@@ -265,7 +309,8 @@ class Workflow(SystemPromptBuilder):
                             label=f"Knowledge base documents retrieved for: '{query}'",
                         )
                     )
-                ]
+                ],
+                type="rag_data",
             )
 
             # Update the messages in state
@@ -311,6 +356,7 @@ class Workflow(SystemPromptBuilder):
         graph.add_node(str(Steps.context_builder), self.context_builder)
         graph.add_node(str(Steps.evaluate_tools), self.decide_next_step)
         graph.add_node(str(Steps.generate_response), self.generate_response)
+        graph.add_node(str(Steps.summarize), self.generate_summary)
         graph.add_node(str(Steps.search_calendars), self.search_calendars)
         graph.add_node(str(Steps.get_current_date), self.get_current_date)
         graph.add_node(str(Steps.modify_calendar), self.modify_calendar)
@@ -324,7 +370,7 @@ class Workflow(SystemPromptBuilder):
             lambda x: x.next_step,
             {
                 Steps.context_builder: str(Steps.context_builder),
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
             },
         )
         graph.add_edge(str(Steps.context_builder), str(Steps.evaluate_tools))
@@ -361,7 +407,7 @@ class Workflow(SystemPromptBuilder):
             lambda x: x.next_step,
             {
                 Steps.modify_calendar: str(Steps.modify_calendar),
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
                 Steps.error_handler: str(Steps.error_handler),
             },
         )
@@ -369,10 +415,11 @@ class Workflow(SystemPromptBuilder):
             str(Steps.modify_calendar),
             lambda x: x.next_step,
             {
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
                 Steps.error_handler: str(Steps.error_handler),
             },
         )
+        graph.add_edge(str(Steps.summarize), END)
 
         graph.add_conditional_edges(
             str(Steps.error_handler),
@@ -385,19 +432,19 @@ class Workflow(SystemPromptBuilder):
 
         return graph
 
-    def _load_memory(self) -> BaseCheckpointSaver:
+    async def _load_memory(self) -> BaseCheckpointSaver:
         uri = env.POSTGRES_URI
         if uri:
-            # 1. open a long‑lived connection
-            raw = connect(
+            conn = await AsyncConnection.connect(
                 uri,
                 autocommit=True,
                 prepare_threshold=0,
             )
-            raw.row_factory = dict_row  # type: ignore[assignment]
-            conn = cast(Connection[DictRow], raw)  # 💡 silence Pyright/mypy
-            saver = PostgresSaver(conn)
-            saver.setup()  # one‑time DDL
+            conn.row_factory = dict_row  # type: ignore[assignment]
+            self._db_conn = cast(AsyncConnection[DictRow], conn)
+
+            saver = AsyncPostgresSaver(self._db_conn)
+            await saver.setup()  # one-time DDL
             return saver
 
         # fallback when no PG URI
