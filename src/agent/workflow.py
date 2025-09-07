@@ -117,7 +117,9 @@ class Workflow(SystemPromptBuilder):
     def get_current_date(self, state: GraphState) -> GraphState:
         state.step_history.append(Steps.get_current_date)
 
-        date_context = SystemMessage(content=f"Current date is: {str(datetime.now())}")
+        date_context = BaseMessage(
+            content=f"Current date is: {str(datetime.now())}", type="calendar"
+        )
 
         state.messages = [date_context]
 
@@ -209,7 +211,7 @@ class Workflow(SystemPromptBuilder):
 
             events = self.calendar_manager.retrieve_events(payload)
 
-            ai_response = SystemMessage(
+            calendar_response = BaseMessage(
                 content=[
                     # This are the different ways I tested to attach the calendar data. Most of them give serialization errors.
                     # "Data retrieved from the calendar", events,
@@ -221,9 +223,10 @@ class Workflow(SystemPromptBuilder):
                             label=f"All events scheduled between {payload.start_time} and {payload.end_time} retrieved at {Steps.search_calendars}",
                         )
                     ),
-                ]
+                ],
+                type="calendar",
             )
-            state.messages = [ai_response]
+            state.messages = [calendar_response]
 
             state.next_step = Steps.evaluate_tools
         except Exception as e:
@@ -238,7 +241,6 @@ class Workflow(SystemPromptBuilder):
             state.next_step = Steps.end
 
             message = state.messages[-1]
-            logger.info(f"Modifying calendar with message: {message}")
             content = message.content[0]
 
             # Parse the last message as LLMResponse
@@ -254,25 +256,29 @@ class Workflow(SystemPromptBuilder):
             # Execute create
             if payloads.create_events:  # and confirmations.create_events:
                 created = self.calendar_manager.create_events(payloads.create_events)
-                system_message = SystemMessage(content=f"Created events: {created}")
-                modification_logs.append(system_message)
-                logger.info(f"Created events: {[e['id'] for e in created]}")
+                calendar_message = BaseMessage(
+                    content=f"Created events: {created}",
+                    type="calendar",
+                )
+                modification_logs.append(calendar_message)
 
             # Execute update
             if payloads.update_events:  # and confirmations.update_events:
                 updated = self.calendar_manager.update_events(payloads.update_events)
-                system_message = SystemMessage(content=f"Updated events: {updated}")
-                modification_logs.append(system_message)
-                logger.info(f"Updated events: {[e['id'] for e in updated]}")
+                calendar_message = BaseMessage(
+                    content=f"Updated events: {updated}",
+                    type="calendar",
+                )
+                modification_logs.append(calendar_message)
 
             # Execute delete
             if payloads.delete_events:  # and confirmations.delete_events:
                 self.calendar_manager.delete_events(payloads.delete_events)
-                system_message = SystemMessage(
-                    content=f"Deleted events: {payloads.delete_events}"
+                calendar_message = BaseMessage(
+                    content=f"Deleted events: {payloads.delete_events}",
+                    type="calendar",
                 )
-                modification_logs.append(system_message)
-                logger.info("Deleted events.")
+                modification_logs.append(calendar_message)
 
             if len(modification_logs) > 0:
                 state.messages = modification_logs
@@ -298,7 +304,7 @@ class Workflow(SystemPromptBuilder):
 
             logger.info(f"Retrieved {len(retrieved_docs)} documents.")
 
-            # Create a new SystemMessage with the retrieved documents
+            # Create a new Rag Message with the retrieved documents
             documents_message = BaseMessage(
                 content=[
                     str(
@@ -354,6 +360,7 @@ class Workflow(SystemPromptBuilder):
         graph.add_node(str(Steps.context_builder), self.context_builder)
         graph.add_node(str(Steps.evaluate_tools), self.decide_next_step)
         graph.add_node(str(Steps.generate_response), self.generate_response)
+        graph.add_node(str(Steps.summarize), self.generate_summary)
         graph.add_node(str(Steps.search_calendars), self.search_calendars)
         graph.add_node(str(Steps.get_current_date), self.get_current_date)
         graph.add_node(str(Steps.modify_calendar), self.modify_calendar)
@@ -367,7 +374,7 @@ class Workflow(SystemPromptBuilder):
             lambda x: x.next_step,
             {
                 Steps.context_builder: str(Steps.context_builder),
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
             },
         )
         graph.add_edge(str(Steps.context_builder), str(Steps.evaluate_tools))
@@ -404,7 +411,7 @@ class Workflow(SystemPromptBuilder):
             lambda x: x.next_step,
             {
                 Steps.modify_calendar: str(Steps.modify_calendar),
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
                 Steps.error_handler: str(Steps.error_handler),
             },
         )
@@ -412,10 +419,11 @@ class Workflow(SystemPromptBuilder):
             str(Steps.modify_calendar),
             lambda x: x.next_step,
             {
-                Steps.end: END,
+                Steps.end: str(Steps.summarize),
                 Steps.error_handler: str(Steps.error_handler),
             },
         )
+        graph.add_edge(str(Steps.summarize), END)
 
         graph.add_conditional_edges(
             str(Steps.error_handler),
