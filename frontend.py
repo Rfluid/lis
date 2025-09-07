@@ -1,14 +1,23 @@
+import asyncio
+import json
 import os
+from typing import Any
 
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from websockets.client import connect
 
 load_dotenv()
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 API_BASE = f"{API_URL}/agent"  # Adjust if needed
 MESSAGES_URL = f"{API_BASE}/messages/user"
 SYSTEM_INSTRUCTIONS_URL = f"{API_BASE}/messages/system"
+
+
+def http_to_ws(url: str) -> str:
+    """Convert http(s) -> ws(s) for WebSocket endpoints."""
+    return url.replace("https://", "wss://").replace("http://", "ws://")
 
 
 def state_url(tid):
@@ -23,7 +32,9 @@ def clear_url(tid):
     return f"{API_BASE}/threads/{tid}"
 
 
-st.set_page_config(page_title="🧠 Lis AI Agent", layout="wide")
+WS_MESSAGES_URL = f"{http_to_ws(API_BASE)}/messages/user/websocket"
+
+st.set_page_config(page_title="🧠 Lia AI Agent", layout="wide")
 
 # Session state initialization
 if "messages" not in st.session_state:
@@ -40,13 +51,12 @@ def set_query_param(key, value):
 
 
 # Get initial values from query parameters or set defaults
-# And update query parameters if they are using default values
 initial_thread_id = st.query_params.get("thread_id")
 if initial_thread_id is None:
     initial_thread_id = "80085"
-    set_query_param("thread_id", initial_thread_id)  # Set if using default
+    set_query_param("thread_id", initial_thread_id)
 else:
-    initial_thread_id = str(initial_thread_id)  # Ensure it's a string
+    initial_thread_id = str(initial_thread_id)
 
 initial_max_retries = st.query_params.get("max_retries")
 if initial_max_retries is None:
@@ -69,20 +79,30 @@ if initial_top_k is None:
 else:
     initial_top_k = int(initial_top_k)
 
+initial_use_ws = st.query_params.get("use_ws")
+if initial_use_ws is None:
+    initial_use_ws = "0"
+    set_query_param("use_ws", initial_use_ws)
+
 
 # Sidebar settings
 with st.sidebar:
     st.title("⚙️ Settings")
 
-    # For on_change, the function called receives the new value of the widget as its first argument
-    # So, we'll define a lambda or a small helper function directly for each
+    use_websocket = st.toggle(
+        "Use WebSocket (streaming)",
+        value=str(initial_use_ws) == "1",
+        help="Stream assistant deltas over WebSocket instead of HTTP.",
+    )
+    set_query_param("use_ws", "1" if use_websocket else "0")
+
     thread_id = st.text_input(
         "Thread ID",
         value=initial_thread_id,
         on_change=lambda: set_query_param(
             "thread_id", st.session_state.thread_id_input
         ),
-        key="thread_id_input",  # Use a key to access the value easily in session_state
+        key="thread_id_input",
     )
     system_instructions = st.text_area("System Instructions", height=100)
 
@@ -91,7 +111,7 @@ with st.sidebar:
         min_value=0,
         step=1,
         value=initial_max_retries,
-        help="How many times Lis should retry before failing.",
+        help="How many times Lia should retry before failing.",
         on_change=lambda: set_query_param(
             "max_retries", st.session_state.max_retries_input
         ),
@@ -165,7 +185,7 @@ with st.sidebar:
 
 
 # Display chat messages
-st.title("💬 Chat with Lis")
+st.title("💬 Chat with Lia")
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -184,28 +204,89 @@ if user_input:
         "max_retries": max_retries,
         "top_k": top_k,
         "loop_threshold": loop_threshold,
+        "chat_interface": "websocket" if use_websocket else "api",
     }
 
-    try:
-        response = requests.post(MESSAGES_URL, json=payload)
-        response.raise_for_status()
-        res_json = response.json()
+    if not use_websocket:
+        # === HTTP mode (unchanged) ===
+        try:
+            response = requests.post(MESSAGES_URL, json=payload)
+            response.raise_for_status()
+            res_json = response.json()
 
-        assistant_reply = res_json["response"]
+            assistant_reply = res_json["response"]
 
-        with st.chat_message("assistant"):
-            st.markdown(assistant_reply)
+            with st.chat_message("assistant"):
+                st.markdown(assistant_reply)
 
-            if res_json["action_payloads"]:
-                with st.expander("📦 Action Payloads", expanded=False):
-                    st.json(res_json["action_payloads"])
+                if res_json.get("action_payloads"):
+                    with st.expander("📦 Action Payloads", expanded=False):
+                        st.json(res_json["action_payloads"])
 
-        st.session_state.messages.append(
-            {"role": "assistant", "content": assistant_reply}
-        )
+            st.session_state.messages.append(
+                {"role": "assistant", "content": assistant_reply}
+            )
 
-    except Exception as e:
-        st.chat_message("assistant").markdown(f"⚠️ Error: {str(e)}")
+        except Exception as e:
+            st.chat_message("assistant").markdown(f"⚠️ Error: {str(e)}")
+
+    else:
+        # === WebSocket streaming mode ===
+        try:
+            with st.chat_message("assistant"):
+                stream_area = st.empty()
+                accumulated: str = ""
+                final_payload: dict[str, Any] | None = None
+
+                async def run_ws():
+                    local_accumulated: str = ""
+                    local_final: dict[str, Any] | None = None
+
+                    async with connect(WS_MESSAGES_URL) as ws:
+                        await ws.send(json.dumps(payload))
+                        while True:
+                            raw = await ws.recv()
+                            msg = json.loads(raw)
+
+                            msg_type = msg.get("type")
+                            data = msg.get("data") or {}
+
+                            if msg_type == "delta":
+                                # Expecting partial LLMAPIResponse shape
+                                response_delta = data.get("response") or ""
+                                if response_delta:
+                                    local_accumulated = response_delta
+                                    stream_area.markdown(local_accumulated)
+
+                            elif msg_type == "final":
+                                local_final = data
+                                final_text = data.get("response") or local_accumulated
+                                stream_area.markdown(final_text)
+
+                                ap = data.get("action_payloads")
+                                if ap:
+                                    with st.expander(
+                                        "📦 Action Payloads", expanded=False
+                                    ):
+                                        st.json(ap)
+                                break
+                            else:
+                                # Unknown frame type; ignore
+                                pass
+
+                    return local_accumulated, local_final
+
+                accumulated, final_payload = asyncio.run(run_ws())
+
+                final_text_for_history = (
+                    final_payload.get("response") if final_payload else None
+                ) or accumulated
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": final_text_for_history}
+                )
+
+        except Exception as e:
+            st.chat_message("assistant").markdown(f"⚠️ WS error: {str(e)}")
 
 # Thread State (collapsed by default)
 if st.session_state.latest_state:
