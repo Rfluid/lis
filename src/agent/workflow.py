@@ -295,14 +295,10 @@ class Workflow(SystemPromptBuilder):
             if not isinstance(query, str):
                 raise ValueError("Expected the query to be a string.")
 
-            logger.info(f"Running RAG retrieval for query: {query}")
-
             # Retrieve relevant documents from the vectorstore
             retrieved_docs = self.vector_manager.retrieve(
                 query=query, top_k=state.top_k
             )
-
-            logger.info(f"Retrieved {len(retrieved_docs)} documents.")
 
             # Create a new Rag Message with the retrieved documents
             documents_message = BaseMessage(
