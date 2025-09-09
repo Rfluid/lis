@@ -34,7 +34,7 @@ def clear_url(tid):
 
 WS_MESSAGES_URL = f"{http_to_ws(API_BASE)}/messages/user/websocket"
 
-st.set_page_config(page_title="🧠 Lia AI Agent", layout="wide")
+st.set_page_config(page_title="🧠 Lis AI Agent", layout="wide")
 
 # Session state initialization
 if "messages" not in st.session_state:
@@ -111,7 +111,7 @@ with st.sidebar:
         min_value=0,
         step=1,
         value=initial_max_retries,
-        help="How many times Lia should retry before failing.",
+        help="How many times Lis should retry before failing.",
         on_change=lambda: set_query_param(
             "max_retries", st.session_state.max_retries_input
         ),
