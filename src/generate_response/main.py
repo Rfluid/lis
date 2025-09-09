@@ -37,6 +37,7 @@ class ResponseGenerator:
             env.LLM_API_KEY,
             model_stop=env.LLM_STOP,
             model_temperature=env.LLM_TEMPERATURE,
+            kwargs=env.LLM_KWARGS,
         )
         self.chain = self._load_chain()
         self.whatsapp_chain = self._load_whatsapp_chain()
