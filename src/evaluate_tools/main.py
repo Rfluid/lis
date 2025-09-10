@@ -76,3 +76,16 @@ class EvaluateTools:
         )
         chain = prompt | self.model | parser
         return chain
+
+    def _load_whatsapp_chain(self):
+        parser = JsonOutputParser(pydantic_object=ToolConfigWithResponse)
+        prompt = PromptTemplate(
+            template=f"{self.prompt}",
+            input_variables=[
+                "query",
+            ],
+            output_parser=parser,
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
+        chain = prompt | self.model | parser
+        return chain
