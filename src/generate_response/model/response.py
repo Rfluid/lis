@@ -24,9 +24,9 @@ Choose `end` if you want to keep going with the chat (e. g. if you are waiting f
 or choose `modify_calendar` to modify the calendar instantly (choose to modify only if the modification is confirmed).
 Never select `modify_calendar` if you are waiting for any sort of confirmation from the user."""
     )
-    next_step_reason: str = Field(
-        description="The reason why the agent needs to use this next step."
-    )
+    # next_step_reason: str = Field(
+    #     description="The reason why the agent needs to use this next step."
+    # )
 
 
 class LLMAPIResponse(BaseLLMResponse):

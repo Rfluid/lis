@@ -7,7 +7,9 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableConfig, RunnableSerializable
 
 from src.config import env
+from src.config.env.llm import PARALLEL_GENERATION
 from src.evaluate_tools.model import ToolConfig
+from src.evaluate_tools.model.tool_config import ToolConfigWithResponse
 from src.llm.service import load_model
 
 
@@ -15,8 +17,11 @@ class EvaluateTools:
     model: BaseLLM | BaseChatModel
     prompt: str
     chain: RunnableSerializable
+    output_class = ToolConfig
 
     def __init__(self):
+        if PARALLEL_GENERATION:
+            self.output_class = ToolConfigWithResponse
         self.model = load_model(
             env.TOOL_EVALUATOR_LLM_PROVIDER,
             env.TOOL_EVALUATOR_LLM_MODEL_NAME,
