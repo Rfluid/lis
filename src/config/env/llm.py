@@ -79,3 +79,9 @@ SUMMARIZE_LLM_TEMPERATURE = (
 )
 summarize_llm_stop = os.getenv("SUMMARIZE_LLM_STOP", None)
 SUMMARIZE_LLM_STOP = summarize_llm_stop.split(",") if summarize_llm_stop else None
+
+PARALLEL_GENERATION = bool(
+    os.getenv(
+        "PARALLEL_GENERATION",
+    )
+)
