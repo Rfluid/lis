@@ -20,11 +20,13 @@ class EvaluateTools:
     model: BaseLLM | BaseChatModel
     prompt: str
     chain: RunnableSerializable
+    whatsapp_chain: RunnableSerializable
     output_class = ToolConfig
 
     def __init__(self):
         if PARALLEL_GENERATION:
             self.output_class = ToolConfigWithResponse
+
         self.model = load_model(
             env.TOOL_EVALUATOR_LLM_PROVIDER,
             env.TOOL_EVALUATOR_LLM_MODEL_NAME,
@@ -36,11 +38,14 @@ class EvaluateTools:
         self.prompt = self._load_prompt()
         self.chain = self._load_chain()
 
+        if PARALLEL_GENERATION:
+            self.whatsapp_chain = self._load_whatsapp_chain()
+
     def decide_next_step(
         self,
         config: RunnableConfig | None = None,
         query: list | None = None,
-    ) -> ToolConfig:
+    ) -> ToolConfig | ToolConfigWithResponse:
         response = self.chain.invoke(
             {
                 "query": query,
@@ -48,13 +53,30 @@ class EvaluateTools:
             config=config,
         )
 
-        return ToolConfig.model_validate(response)
+        return self.output_class.model_validate(response)
+
+    def decide_whatsapp_next_step(
+        self,
+        config: RunnableConfig | None = None,
+        query: list | None = None,
+    ) -> ToolConfigWithWhatsAppResponse:
+        response = self.chain.invoke(
+            {
+                "query": query,
+            },
+            config=config,
+        )
+
+        return ToolConfigWithWhatsAppResponse.model_validate(response)
 
     def _load_prompt(self) -> str:
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         prompt_dir = os.path.join(root_dir, "prompts")
         primary_path = os.path.join(prompt_dir, "evaluate_tools.md")
-        fallback_path = os.path.join(prompt_dir, "evaluate_tools.example.md")
+        fallback_file = "evaluate_tools.example.md"
+        if PARALLEL_GENERATION:
+            fallback_file = "evaluate_tools_parallel.example.md"
+        fallback_path = os.path.join(prompt_dir, fallback_file)
 
         if os.path.isfile(primary_path):
             with open(primary_path, encoding="utf-8") as f:
@@ -64,7 +86,7 @@ class EvaluateTools:
                 return f.read()
         else:
             raise FileNotFoundError(
-                "Neither prompts/evaluate_tools.md nor prompts/evaluate_tools.example.md found."
+                f"Neither prompts/evaluate_tools.md nor prompts/${fallback_file} found."
             )
 
     def _load_chain(self):
