@@ -1,10 +1,11 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from src.agent.model.steps import Steps
 from src.calendar_manager.model.retrieve_events import RetrieveEvents
 from src.generate_response.model.action_payloads import ActionPayloads
+from src.generate_response.model.response import WebSocketData
 from src.whatsapp.model.message import Message
 
 
@@ -59,3 +60,10 @@ class ToolConfigWithResponse(BaseToolConfigWithResponse):
 
 class ToolConfigWithWhatsAppResponse(BaseToolConfigWithResponse):
     data: Message | None = Field(description="Response in the WhatsApp format.")
+
+
+class ToolConfigWebSocketResponse(BaseModel):
+    type: WebSocketData = Field(description="Data type.")
+    data: Any = Field(
+        description="Data returned by the model. Can be a delta or the full response."
+    )

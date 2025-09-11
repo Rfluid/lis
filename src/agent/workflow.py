@@ -21,8 +21,10 @@ from src.agent.model.tool_data import ToolData
 from src.calendar_manager.main import CalendarManager
 from src.calendar_manager.model.retrieve_events import RetrieveEvents
 from src.config import env
+from src.config.env.llm import PARALLEL_GENERATION
 from src.error_handler import ErrorHandler
 from src.evaluate_tools.main import EvaluateTools
+from src.evaluate_tools.model.tool_config import ToolConfigWebSocketResponse
 from src.generate_response import ResponseGenerator
 from src.generate_response.model.response import BaseLLMResponse
 from src.summarize.main import Summarizer
@@ -174,12 +176,16 @@ class Workflow(SystemPromptBuilder):
 
         return state
 
-    def decide_next_step(
+    async def decide_next_step(
         self,
         state: GraphState,
         config: RunnableConfig | None = None,
     ) -> GraphState:
         state.step_history.append(Steps.evaluate_tools)
+
+        if config is None:
+            raise ValueError("Graph config unavailable.")
+
         try:
             # Preventing double injection of context and loops
             if self._is_looping(
@@ -194,17 +200,54 @@ class Workflow(SystemPromptBuilder):
             #     state.previous_step = Steps.evaluate_tools
             #     raise ValueError("Loop detected: Tool already used.")
 
-            response = self.tool_evaluator.decide_next_step(
-                config,
-                state.messages,  # Verify need
-            )
+            if PARALLEL_GENERATION:
+                match state.chat_interface:
+                    case ChatInterface.api:
+                        response = self.tool_evaluator.decide_next_step(
+                            config,
+                            state.messages,  # Verify need
+                        )
+                    case ChatInterface.whatsapp:
+                        response = self.tool_evaluator.decide_whatsapp_next_step(
+                            config,
+                            state.messages,  # Verify need
+                        )
+                    case ChatInterface.websocket:
+                        # Retrieve websocket from the config you passed earlier
+                        websocket = config.get("configurable", {}).get("websocket")
 
-            reasoning_message = BaseMessage(
-                type="reasoning", content=[response.model_dump()]
-            )
-            state.messages = [reasoning_message]
+                        if websocket is None:
+                            raise ValueError(
+                                "No WebSocket for WebSocket chat interface."
+                            )
+
+                        response = (
+                            await self.tool_evaluator.stream_next_step_via_websocket(
+                                websocket,
+                                config,
+                                state.messages,  # Verify need
+                            )
+                        )
+            else:
+                response = self.tool_evaluator.decide_next_step(
+                    config,
+                    state.messages,
+                )
+
+            if isinstance(response, ToolConfigWebSocketResponse):
+                ai_message = AIMessage(content=[response.model_dump()])
+                state.messages = [ai_message]
+                # TODO: Add calendar manager payload to state.tool_payloads.
+                if response.tool == "end":
+                    state.response = ai_message
+            else:
+                reasoning = BaseMessage(
+                    type="reasoning", content=[response.model_dump()]
+                )
+                state.messages = [reasoning]
 
             state.next_step = Steps(response.tool)
+
             calendar_manager_payload = response.search_calendars
             if calendar_manager_payload is not None:
                 retrieve_events_obj = RetrieveEvents.model_validate(
