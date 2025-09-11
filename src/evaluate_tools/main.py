@@ -9,7 +9,10 @@ from langchain_core.runnables import RunnableConfig, RunnableSerializable
 from src.config import env
 from src.config.env.llm import PARALLEL_GENERATION
 from src.evaluate_tools.model import ToolConfig
-from src.evaluate_tools.model.tool_config import ToolConfigWithResponse
+from src.evaluate_tools.model.tool_config import (
+    ToolConfigWithResponse,
+    ToolConfigWithWhatsAppResponse,
+)
 from src.llm.service import load_model
 
 
@@ -65,7 +68,7 @@ class EvaluateTools:
             )
 
     def _load_chain(self):
-        parser = JsonOutputParser(pydantic_object=ToolConfig)
+        parser = JsonOutputParser(pydantic_object=self.output_class)
         prompt = PromptTemplate(
             template=f"{self.prompt}",
             input_variables=[
@@ -78,7 +81,7 @@ class EvaluateTools:
         return chain
 
     def _load_whatsapp_chain(self):
-        parser = JsonOutputParser(pydantic_object=ToolConfigWithResponse)
+        parser = JsonOutputParser(pydantic_object=ToolConfigWithWhatsAppResponse)
         prompt = PromptTemplate(
             template=f"{self.prompt}",
             input_variables=[
